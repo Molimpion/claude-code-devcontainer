@@ -1028,6 +1028,7 @@ Em **todas**, inclua a feature `node:1` antes da `claude-code:1`.
 | `✘ Failed to connect` no MCP do GitHub | endpoint exige assinatura do Copilot | usar `gh` por feature (Etapa C4.7) |
 | `gh` pede login a cada rebuild | falta o bind de `~/.config/gh` | adicionar o mount e `mkdir -p ~/.config/gh` |
 | Dezenas de MCPs na lista que não dá para remover | conectores do claude.ai carregando automaticamente | desativar em claude.ai/customize/connectors |
+| `Auto-update failed: no write permission to npm prefix` | feature instalou como root, container roda como `vscode` | `g+w` + setgid via `postCreateCommand` (Etapa C7.5) |
 
 ---
 
