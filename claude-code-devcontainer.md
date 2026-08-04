@@ -632,7 +632,108 @@ sudo chown -R vscode:vscode /home/vscode/.m2
 Mesma lógica para outros caches: `.gradle`, `.cargo`, `bundle`, e o volume de `node_modules` (ver a seção de Node na Parte C-BIS).
 
 ---
+## Etapa C7.5 — Auto-update do Claude Code sem permissão
 
+### O sintoma
+
+Ao abrir uma sessão, aparece:
+
+```
+✘ Auto-update failed: no write permission to npm prefix · Run claude doctor
+```
+
+Nada quebra. A versão instalada funciona normalmente, você trabalha o dia
+inteiro sem notar diferença — mas o Claude Code **nunca se atualiza sozinho**.
+O container vai ficando para trás versão após versão, em silêncio.
+
+### A causa
+
+As features do devcontainer rodam **como root** durante o build. A feature
+`ghcr.io/anthropics/devcontainer-features/claude-code:1` instala o pacote em
+`$(npm config get prefix)/lib/node_modules/@anthropic-ai/`, e essa pasta fica
+com dono `root` e permissão `drwxr-sr-x`.
+
+O container, porém, roda com `"remoteUser": "vscode"`. Quando o Claude tenta
+gravar a versão nova ali, não tem permissão de escrita — e desiste.
+
+É o mesmo padrão da Etapa C7: algo criado por root no build, usado por um
+usuário não-root em tempo de execução.
+
+### A correção
+
+Manter `root` como dono e dar escrita ao **grupo** `nvm` — o usuário `vscode`
+já pertence a ele — mais o bit **setgid** nos diretórios.
+
+No `devcontainer.json`:
+
+```json
+"postCreateCommand": "D=$(npm config get prefix)/lib/node_modules/@anthropic-ai; if [ -d \"$D\" ]; then sudo chmod -R g+w \"$D\"; sudo find \"$D\" -type d -exec chmod g+s {} +; fi"
+```
+
+O `postCreateCommand` é o lugar certo porque roda **depois** das features. Um
+comando executado antes não encontraria a pasta — ela ainda não existe. E, por
+estar no `devcontainer.json`, a correção é reaplicada a cada rebuild, sem você
+precisar lembrar.
+
+O `if [ -d ... ]` evita que o comando falhe em imagem onde a feature não foi
+instalada.
+
+### Por que o setgid importa
+
+Esta é a parte que costuma ser esquecida, e sem ela a correção dura uma
+atualização só.
+
+O `chmod -R g+w` resolve o **agora**: os arquivos que existem passam a ser
+graváveis pelo grupo `nvm`. Mas o update não só sobrescreve arquivos — ele
+**cria** arquivos e pastas novos. E, por padrão, um arquivo criado pelo usuário
+`vscode` nasce no **grupo pessoal dele**, não em `nvm`.
+
+Resultado: a atualização seguinte encontra arquivos fora do grupo que tem
+permissão de escrita, e o erro volta.
+
+O bit setgid (`chmod g+s`) em um diretório muda essa regra: tudo que for criado
+lá dentro **herda o grupo do diretório** em vez do grupo do usuário. Com ele, os
+arquivos do update nascem já em `nvm`, com escrita de grupo, e o ciclo se
+sustenta sozinho.
+
+Por isso o `find -type d`: setgid só faz sentido em diretório, e precisa valer
+para toda a árvore, não só para a raiz.
+
+### Duas "soluções" que aparecem em fórum e que você deve evitar
+
+**`chmod 777`** — resolve o sintoma abrindo escrita para qualquer processo do
+container, inclusive os que você não controla. Você trocou um aviso chato por
+uma permissão que não tem como justificar depois. O `g+w` dá exatamente o acesso
+necessário, para exatamente quem precisa dele.
+
+**Rodar o container como root** (remover o `remoteUser` ou apontá-lo para
+`root`) — desfaz boa parte do motivo de estar usando devcontainer. Todo arquivo
+que o agente criar no projeto sai com dono root no teu host, pelo bind mount, e
+você passa a precisar de `sudo` para editar o próprio código. É um problema bem
+maior que o auto-update parado.
+
+### Se você já tem um `postCreateCommand`
+
+Só existe um por arquivo. Encadeie com `&&`:
+
+```json
+"postCreateCommand": "npm ci && D=$(npm config get prefix)/lib/node_modules/@anthropic-ai; if [ -d \"$D\" ]; then sudo chmod -R g+w \"$D\"; sudo find \"$D\" -type d -exec chmod g+s {} +; fi"
+```
+
+### Verificar
+
+Recrie o container e confira as permissões:
+
+```bash
+devcontainer up --workspace-folder . --remove-existing-container
+dcsh
+ls -ld $(npm config get prefix)/lib/node_modules/@anthropic-ai
+```
+
+O que você quer ver: dono `root`, grupo `nvm`, e `rws` no bloco do grupo — o
+`s` no lugar do `x` é o setgid ativo.
+
+---
 ## Etapa C8 — Validar
 
 Ainda dentro do `dcsh`:
